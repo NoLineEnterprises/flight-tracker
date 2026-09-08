@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FlightTrack</title>
+</head>
+
+<body>
+
+    <h1>FlightTrack</h1>
+    <p id="status">Waiting for flight data...</p>
+    <p id="location"></p>
+    
+    <table border="1">
+    <thead>
+        <tr>
+            <th>Flight</th>
+            <th>Type</th>
+            <th>Distance (miles)</th>
+            <th>Bearing to Aircraft</th>
+            <th>Bearing to Me</th>
+            <th>Aircraft Heading</th>
+            <th>Difference</th>
+            <th>Heading Toward Me</th>
+            <th>Altitude (ft)</th>
+            <th>Speed (knots)</th>
+            <th>Elevation Angle</th>
+            <th>Visible Now</th>
+            <th>Future Visible</th>
+            <th>Closest Distance (miles)</th>
+            <th>Closest Time</th>
+            <th>Closest Bearing</th>
+            <th>Closest Elevation Angle</th>
+            <th>Visible Time Range</th>
+        </tr>
+    </thead>
+
+    <tbody id="aircraftList"></tbody>
+    </table>
+
+    <p>
+        <strong>Visibility calculation:</strong><br>
+        Elevation Angle = atan(Height Above Me / Horizontal Distance) (180 / pi)<br>
+        Likely Visible = Elevation Angle >= 10
+    </p>
+    
+    <script src="app.js"></script>
+
+</body>
+</html>
