@@ -2,7 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Default location keeps the old desktop/browser version working
 // when no latitude/longitude are supplied.
@@ -12,7 +12,6 @@ const defaultLon = -98.38;
 const radius = 500;
 
 const server = http.createServer(async (req, res) => {
-
     const requestUrl = new URL(
         req.url,
         `http://${req.headers.host}`
@@ -20,9 +19,7 @@ const server = http.createServer(async (req, res) => {
 
     // Aircraft API
     if (requestUrl.pathname === "/api/flights") {
-
         try {
-
             const latParam =
                 requestUrl.searchParams.get("lat");
 
@@ -97,7 +94,6 @@ const server = http.createServer(async (req, res) => {
             }));
 
         } catch (error) {
-
             console.error(error);
 
             res.writeHead(500, {
@@ -117,7 +113,6 @@ const server = http.createServer(async (req, res) => {
         requestUrl.pathname === "/" ||
         requestUrl.pathname === "/index.html"
     ) {
-
         const file = fs.readFileSync(
             path.join(__dirname, "index.html")
         );
@@ -132,7 +127,6 @@ const server = http.createServer(async (req, res) => {
 
     // Serve app.js
     if (requestUrl.pathname === "/app.js") {
-
         const file = fs.readFileSync(
             path.join(__dirname, "app.js")
         );
@@ -149,8 +143,8 @@ const server = http.createServer(async (req, res) => {
     res.end("Not found");
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
     console.log(
-        `FlightTrack running at http://localhost:${PORT}`
+        `FlightTrack running on port ${PORT}`
     );
 });
