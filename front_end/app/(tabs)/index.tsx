@@ -27,7 +27,8 @@ import {
 } from '../../src/flightCalculations';
 
 const API_BASE_URL =
-  'http://192.168.1.65:3000/api/flights';
+  //'http://192.168.1.65:3000/api/flights';
+  'https://your-render-service.onrender.com/api/flights';
 
 const DEFAULT_SAVED_LAT = '40.58';
 const DEFAULT_SAVED_LON = '-98.38';

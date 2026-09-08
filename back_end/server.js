@@ -1,11 +1,8 @@
 const http = require("http");
-const fs = require("fs");
-const path = require("path");
 
 const PORT = process.env.PORT || 3000;
 
-// Default location keeps the old desktop/browser version working
-// when no latitude/longitude are supplied.
+// Default location if no latitude/longitude are supplied.
 const defaultLat = 40.58;
 const defaultLon = -98.38;
 
@@ -16,6 +13,16 @@ const server = http.createServer(async (req, res) => {
         req.url,
         `http://${req.headers.host}`
     );
+
+    // Simple root/health check
+    if (requestUrl.pathname === "/") {
+        res.writeHead(200, {
+            "Content-Type": "text/plain"
+        });
+
+        res.end("FlightTrack backend is running");
+        return;
+    }
 
     // Aircraft API
     if (requestUrl.pathname === "/api/flights") {
@@ -108,38 +115,11 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Serve index.html
-    if (
-        requestUrl.pathname === "/" ||
-        requestUrl.pathname === "/index.html"
-    ) {
-        const file = fs.readFileSync(
-            path.join(__dirname, "index.html")
-        );
+    // Anything else
+    res.writeHead(404, {
+        "Content-Type": "text/plain"
+    });
 
-        res.writeHead(200, {
-            "Content-Type": "text/html"
-        });
-
-        res.end(file);
-        return;
-    }
-
-    // Serve app.js
-    if (requestUrl.pathname === "/app.js") {
-        const file = fs.readFileSync(
-            path.join(__dirname, "app.js")
-        );
-
-        res.writeHead(200, {
-            "Content-Type": "text/javascript"
-        });
-
-        res.end(file);
-        return;
-    }
-
-    res.writeHead(404);
     res.end("Not found");
 });
 
