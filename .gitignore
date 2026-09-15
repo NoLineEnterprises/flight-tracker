@@ -1,2 +1,4 @@
 front_end/node_modules/
 front_end/.expo/
+front_end/.env
+front_end/app.backup.json
