@@ -12,7 +12,12 @@ import {
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
-import MapView, { Circle, Marker, Polyline } from 'react-native-maps';
+import MapView, {
+  Circle,
+  Marker,
+  Polyline,
+  PROVIDER_GOOGLE,
+} from 'react-native-maps';
 
 
 import {
@@ -1826,6 +1831,7 @@ const isConfidenceExpanded =
       </View>
 
       <MapView
+        provider={PROVIDER_GOOGLE}
         style={styles.map}
         initialRegion={getFlightMapRegion(
           myLat,
@@ -1874,37 +1880,6 @@ const isConfidenceExpanded =
                     fillColor="rgba(0, 0, 0, 0)"
                   />
 
-                  <Marker
-                    coordinate={getRingLabelCoordinate(
-                      myLat,
-                      myLon,
-                      radius
-                    )}
-                    anchor={{ x: 0.5, y: 0.5 }}
-                    zIndex={5}
-                  >
-                    <View
-                      style={[
-                        styles.ringLabel,
-                        {
-                          borderColor:
-                            ring.color,
-                        },
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.ringLabelText,
-                          {
-                            color:
-                              ring.color,
-                          },
-                        ]}
-                      >
-                        {ring.angle}°
-                      </Text>
-                    </View>
-                  </Marker>
                 </Fragment>
               );
             })}
