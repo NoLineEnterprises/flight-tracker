@@ -261,30 +261,60 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Serve index.html
+    // Serve the old browser version when those files exist.
+    // On Render, the backend may be deployed without index.html/app.js,
+    // so fall back to a simple health response instead of crashing.
     if (
         requestUrl.pathname === "/" ||
         requestUrl.pathname === "/index.html"
     ) {
 
-        const file = fs.readFileSync(
-            path.join(__dirname, "index.html")
-        );
+        const indexPath =
+            path.join(__dirname, "index.html");
 
-        res.writeHead(200, {
-            "Content-Type": "text/html"
-        });
+        if (fs.existsSync(indexPath)) {
 
-        res.end(file);
+            const file =
+                fs.readFileSync(indexPath);
+
+            res.writeHead(200, {
+                "Content-Type": "text/html"
+            });
+
+            res.end(file);
+
+        } else {
+
+            res.writeHead(200, {
+                "Content-Type": "text/plain"
+            });
+
+            res.end(
+                "FlightTrack API is running"
+            );
+        }
+
         return;
     }
 
-    // Serve app.js
+    // Serve app.js only when the old browser file exists.
     if (requestUrl.pathname === "/app.js") {
 
-        const file = fs.readFileSync(
-            path.join(__dirname, "app.js")
-        );
+        const appPath =
+            path.join(__dirname, "app.js");
+
+        if (!fs.existsSync(appPath)) {
+
+            res.writeHead(404, {
+                "Content-Type": "text/plain"
+            });
+
+            res.end("Not found");
+            return;
+        }
+
+        const file =
+            fs.readFileSync(appPath);
 
         res.writeHead(200, {
             "Content-Type": "text/javascript"
