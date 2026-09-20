@@ -27,6 +27,7 @@ import {
   getDistanceMiles,
   getElevationAngle,
   getFutureVisibility,
+  getTrackVisibilityGeometry,
   getVisibilityConfidence,
   getVisibilityTimeRange,
 } from '../../src/flightCalculations';
@@ -320,98 +321,30 @@ function getHeadingLineLengthMeters(
   trackDegrees: number,
   altitudeFeet: number
 ) {
-  const milesToMeters = 1609.344;
-  const extraDistanceMeters =
-    10 * milesToMeters;
+  const extraDistanceMiles = 10;
 
-  const ringRadiusMeters =
-    getVisibilityRadiusMeters(
-      altitudeFeet,
-      10
-    );
-
-  const aircraftDistanceMeters =
-    getDistanceMiles(
+  const geometry =
+    getTrackVisibilityGeometry(
       observerLat,
       observerLon,
       aircraftLat,
-      aircraftLon
-    ) * milesToMeters;
-
-  const bearingToAircraft =
-    getBearing(
-      observerLat,
-      observerLon,
-      aircraftLat,
-      aircraftLon
-    ) * Math.PI / 180;
-
-  const track =
-    trackDegrees * Math.PI / 180;
-
-  // Aircraft position relative to the observer.
-  // x = east/west, y = north/south.
-  const x =
-    aircraftDistanceMeters *
-    Math.sin(bearingToAircraft);
-
-  const y =
-    aircraftDistanceMeters *
-    Math.cos(bearingToAircraft);
-
-  // Unit vector in the aircraft's current direction.
-  const vx = Math.sin(track);
-  const vy = Math.cos(track);
-
-  // Solve where the aircraft's forward path crosses
-  // the 10-degree visibility circle.
-  const dot =
-    x * vx +
-    y * vy;
-
-  const discriminant =
-    dot * dot -
-    (
-      aircraftDistanceMeters *
-      aircraftDistanceMeters -
-      ringRadiusMeters *
-      ringRadiusMeters
+      aircraftLon,
+      trackDegrees,
+      altitudeFeet
     );
 
-  if (discriminant >= 0) {
-    const root =
-      Math.sqrt(discriminant);
-
-    const firstIntersection =
-      -dot - root;
-
-    const secondIntersection =
-      -dot + root;
-
-    const forwardIntersections =
-      [
-        firstIntersection,
-        secondIntersection,
-      ].filter(
-        distance => distance >= 0
-      );
-
-    if (forwardIntersections.length > 0) {
-      const farIntersection =
-        Math.max(
-          ...forwardIntersections
-        );
-
-      return (
-        farIntersection +
-        extraDistanceMeters
-      );
-    }
+  if (
+    geometry === null ||
+    geometry.farIntersectionMiles === null ||
+    geometry.farIntersectionMiles <= 0
+  ) {
+    return extraDistanceMiles * 1609.344;
   }
 
-  // Fallback if the projected path does not
-  // intersect the 10-degree circle.
-  return extraDistanceMeters;
+  return (
+    geometry.farIntersectionMiles +
+    extraDistanceMiles
+  ) * 1609.344;
 }
 
 
@@ -436,7 +369,7 @@ function getFlightMapRegion(
     const ringRadiusMeters =
       getVisibilityRadiusMeters(
         plane.alt_baro,
-        10
+        30
       );
 
     const latRadiusDegrees =
@@ -522,6 +455,62 @@ function getFlightMapRegion(
 }
 
 
+function getAllFlightsMapRegion(
+  observerLat: number,
+  observerLon: number,
+  planes: Aircraft[]
+) {
+  const latitudes = [observerLat];
+  const longitudes = [observerLon];
+
+  planes.forEach((plane) => {
+    latitudes.push(plane.lat);
+    longitudes.push(plane.lon);
+
+    if (
+      typeof plane.track === 'number' &&
+      typeof plane.alt_baro === 'number'
+    ) {
+      const headingEnd =
+        getDestinationCoordinate(
+          plane.lat,
+          plane.lon,
+          plane.track,
+          getHeadingLineLengthMeters(
+            observerLat,
+            observerLon,
+            plane.lat,
+            plane.lon,
+            plane.track,
+            plane.alt_baro
+          )
+        );
+
+      latitudes.push(headingEnd.latitude);
+      longitudes.push(headingEnd.longitude);
+    }
+  });
+
+  const minLat = Math.min(...latitudes);
+  const maxLat = Math.max(...latitudes);
+  const minLon = Math.min(...longitudes);
+  const maxLon = Math.max(...longitudes);
+
+  return {
+    latitude: (minLat + maxLat) / 2,
+    longitude: (minLon + maxLon) / 2,
+    latitudeDelta: Math.max(
+      (maxLat - minLat) * 1.20,
+      0.5
+    ),
+    longitudeDelta: Math.max(
+      (maxLon - minLon) * 1.20,
+      0.5
+    ),
+  };
+}
+
+
 export default function HomeScreen() {
 
   const [aircraft, setAircraft] =
@@ -541,6 +530,14 @@ const [expandedCards, setExpandedCards] =
 
 const [mapPlane, setMapPlane] =
   useState<Aircraft | null>(null);
+
+const [
+  allFlightsMapVisible,
+  setAllFlightsMapVisible,
+] = useState(false);
+
+const [trackDashPhase, setTrackDashPhase] =
+  useState(0);
 
 const [
   expandedConfidenceCards,
@@ -563,6 +560,23 @@ const [savedLonText, setSavedLonText] =
 
 const [locationSettingsLoaded, setLocationSettingsLoaded] =
   useState(false);
+
+useEffect(() => {
+  if (
+    mapPlane === null &&
+    !allFlightsMapVisible
+  ) {
+    return;
+  }
+
+  const timer = setInterval(() => {
+    setTrackDashPhase((phase) =>
+      (phase + 0.018) % 1
+    );
+  }, 70);
+
+  return () => clearInterval(timer);
+}, [mapPlane, allFlightsMapVisible]);
 
 
   async function getFlights(
@@ -629,7 +643,7 @@ const [locationSettingsLoaded, setLocationSettingsLoaded] =
 
           const visibleNow =
             elevationAngle !== null &&
-            elevationAngle >= 10;
+            elevationAngle >= 30;
 
           const futureVisibility =
             typeof plane.track === 'number' &&
@@ -646,9 +660,31 @@ const [locationSettingsLoaded, setLocationSettingsLoaded] =
                 )
               : null;
 
+          const pathIntersects30DegreeRing =
+            typeof plane.track === 'number' &&
+            altitude !== null &&
+            (() => {
+              const geometry =
+                getTrackVisibilityGeometry(
+                  data.location.lat,
+                  data.location.lon,
+                  plane.lat,
+                  plane.lon,
+                  plane.track,
+                  altitude
+                );
+
+              return (
+                geometry !== null &&
+                geometry.farIntersectionMiles !== null &&
+                geometry.farIntersectionMiles > 0
+              );
+            })();
+
           const futureVisible =
             futureVisibility !== null &&
-            futureVisibility.willBeVisible;
+            futureVisibility.willBeVisible &&
+            pathIntersects30DegreeRing;
 
           return visibleNow || futureVisible;
         });
@@ -682,7 +718,7 @@ const [locationSettingsLoaded, setLocationSettingsLoaded] =
 
           const visibleNow =
             elevationAngle !== null &&
-            elevationAngle >= 10;
+            elevationAngle >= 30;
 
           const futureVisibility =
             typeof plane.track === 'number' &&
@@ -699,10 +735,32 @@ const [locationSettingsLoaded, setLocationSettingsLoaded] =
                 )
               : null;
 
+          const pathIntersects30DegreeRing =
+            typeof plane.track === 'number' &&
+            altitude !== null &&
+            (() => {
+              const geometry =
+                getTrackVisibilityGeometry(
+                  data.location.lat,
+                  data.location.lon,
+                  plane.lat,
+                  plane.lon,
+                  plane.track,
+                  altitude
+                );
+
+              return (
+                geometry !== null &&
+                geometry.farIntersectionMiles !== null &&
+                geometry.farIntersectionMiles > 0
+              );
+            })();
+
           const futureVisible =
             !visibleNow &&
             futureVisibility !== null &&
-            futureVisibility.willBeVisible;
+            futureVisibility.willBeVisible &&
+            pathIntersects30DegreeRing;
 
           return {
             distance,
@@ -988,6 +1046,96 @@ const [locationSettingsLoaded, setLocationSettingsLoaded] =
         )
       : null;
 
+  // Re-check every aircraft before showing it on the All Flights map.
+  // Keep an aircraft only if:
+  //   1) it is currently at or above the 30-degree viewing angle, OR
+  //   2) it has complete motion data and is projected to reach 30 degrees.
+  //
+  // This intentionally removes distant aircraft that have no usable
+  // track/speed information, because we cannot know that they are headed
+  // toward the observer.
+  const allFlightsMapAircraft =
+    myLat !== null && myLon !== null
+      ? aircraft.filter((plane) => {
+          const altitude =
+            typeof plane.alt_baro === 'number'
+              ? plane.alt_baro
+              : null;
+
+          if (altitude === null) {
+            return false;
+          }
+
+          const distance =
+            getDistanceMiles(
+              myLat,
+              myLon,
+              plane.lat,
+              plane.lon
+            );
+
+          const elevationAngle =
+            getElevationAngle(
+              altitude,
+              distance
+            );
+
+          const visibleNow =
+            elevationAngle >= 30;
+
+          if (visibleNow) {
+            return true;
+          }
+
+          if (
+            typeof plane.track !== 'number' ||
+            typeof plane.gs !== 'number'
+          ) {
+            return false;
+          }
+
+          const futureVisibility =
+            getFutureVisibility(
+              myLat,
+              myLon,
+              plane.lat,
+              plane.lon,
+              plane.track,
+              plane.gs,
+              altitude
+            );
+
+          if (
+            futureVisibility === null ||
+            !futureVisibility.willBeVisible
+          ) {
+            return false;
+          }
+
+          // Use the exact same 30-degree ring intersection
+          // geometry that is used to draw the projected path.
+          return (
+            (() => {
+              const geometry =
+                getTrackVisibilityGeometry(
+                  myLat,
+                  myLon,
+                  plane.lat,
+                  plane.lon,
+                  plane.track,
+                  altitude
+                );
+
+              return (
+                geometry !== null &&
+                geometry.farIntersectionMiles !== null &&
+                geometry.farIntersectionMiles > 0
+              );
+            })()
+          );
+        })
+      : [];
+
   return (
     <ScrollView
       contentContainerStyle={styles.container}
@@ -1132,6 +1280,22 @@ const [locationSettingsLoaded, setLocationSettingsLoaded] =
         </Text>
       </Pressable>
 
+      <Pressable
+        style={styles.allFlightsMapButton}
+        onPress={() =>
+          setAllFlightsMapVisible(true)
+        }
+        disabled={
+          allFlightsMapAircraft.length === 0 ||
+          myLat === null ||
+          myLon === null
+        }
+      >
+        <Text style={styles.allFlightsMapButtonText}>
+          Show All Flights Map
+        </Text>
+      </Pressable>
+
       {aircraft.map((plane, index) => {
 
         if (
@@ -1182,7 +1346,7 @@ const [locationSettingsLoaded, setLocationSettingsLoaded] =
 
         const visibleNow =
           elevationAngle !== null &&
-          elevationAngle >= 10;
+          elevationAngle >= 30;
 
         const futureVisibility =
           track !== null &&
@@ -1511,6 +1675,194 @@ const isConfidenceExpanded =
   </View>
 );
       })}
+
+
+{allFlightsMapVisible &&
+ myLat !== null &&
+ myLon !== null && (
+
+  <Modal
+    visible={true}
+    animationType="slide"
+    onRequestClose={() =>
+      setAllFlightsMapVisible(false)
+    }
+  >
+    <View style={styles.mapScreen}>
+
+      <View style={styles.mapHeader}>
+        <Text style={styles.mapTitle}>
+          All Flights
+        </Text>
+
+        <Pressable
+          style={styles.closeButton}
+          onPress={() =>
+            setAllFlightsMapVisible(false)
+          }
+        >
+          <Text style={styles.closeButtonText}>
+            Close
+          </Text>
+        </Pressable>
+      </View>
+
+      <Text style={styles.allFlightsMapSummary}>
+        {allFlightsMapAircraft.length} flights
+      </Text>
+
+      <MapView
+        provider={PROVIDER_GOOGLE}
+        style={styles.map}
+        initialRegion={getAllFlightsMapRegion(
+          myLat,
+          myLon,
+          aircraft
+        )}
+      >
+
+        <Marker
+          coordinate={{
+            latitude: myLat,
+            longitude: myLon,
+          }}
+          title="My Location"
+        />
+
+        {allFlightsMapAircraft.map((plane, index) => {
+          const planeKey =
+            plane.hex ??
+            plane.flight?.trim() ??
+            'all-map-plane-' + index;
+
+          const hasTrack =
+            typeof plane.track === 'number' &&
+            typeof plane.alt_baro === 'number';
+
+          let headingLineLength = 0;
+
+          if (hasTrack) {
+            headingLineLength =
+              getHeadingLineLengthMeters(
+                myLat,
+                myLon,
+                plane.lat,
+                plane.lon,
+                plane.track as number,
+                plane.alt_baro as number
+              );
+          }
+
+          const dashCount = 8;
+          const dashSpacing = 1 / dashCount;
+          const dashLength = 0.055;
+
+          return (
+            <Fragment key={planeKey}>
+              {hasTrack && (
+                <>
+                  <Polyline
+                    coordinates={[
+                      {
+                        latitude: plane.lat,
+                        longitude: plane.lon,
+                      },
+                      getDestinationCoordinate(
+                        plane.lat,
+                        plane.lon,
+                        plane.track as number,
+                        headingLineLength
+                      ),
+                    ]}
+                    strokeWidth={5}
+                    strokeColor="#FFD400"
+                    geodesic={true}
+                    zIndex={4}
+                  />
+
+                  {Array.from(
+                    { length: dashCount },
+                    (_, dashIndex) => {
+                      const startFraction =
+                        (
+                          dashIndex *
+                            dashSpacing +
+                          trackDashPhase
+                        ) % 1;
+
+                      const endFraction =
+                        Math.min(
+                          startFraction +
+                            dashLength,
+                          1
+                        );
+
+                      if (
+                        endFraction <=
+                        startFraction
+                      ) {
+                        return null;
+                      }
+
+                      return (
+                        <Polyline
+                          key={
+                            planeKey +
+                            '-dash-' +
+                            dashIndex
+                          }
+                          coordinates={[
+                            getDestinationCoordinate(
+                              plane.lat,
+                              plane.lon,
+                              plane.track as number,
+                              headingLineLength *
+                                startFraction
+                            ),
+                            getDestinationCoordinate(
+                              plane.lat,
+                              plane.lon,
+                              plane.track as number,
+                              headingLineLength *
+                                endFraction
+                            ),
+                          ]}
+                          strokeWidth={2}
+                          strokeColor="#000000"
+                          geodesic={true}
+                          zIndex={5}
+                        />
+                      );
+                    }
+                  )}
+                </>
+              )}
+
+              <Marker
+                coordinate={{
+                  latitude: plane.lat,
+                  longitude: plane.lon,
+                }}
+                anchor={{ x: 0.5, y: 0.5 }}
+                image={require('../../assets/images/aircraft-dot.png')}
+                zIndex={6}
+                onPress={() => {
+                  setAllFlightsMapVisible(false);
+
+                  setTimeout(() => {
+                    setMapPlane(plane);
+                  }, 300);
+                }}
+              />
+            </Fragment>
+          );
+        })}
+
+      </MapView>
+
+    </View>
+  </Modal>
+)}
 
 {mapPlane !== null &&
  myLat !== null &&
@@ -1844,10 +2196,6 @@ const isConfidenceExpanded =
           <>
             {[
               {
-                angle: 10,
-                color: '#d32f2f',
-              },
-              {
                 angle: 30,
                 color: '#f57c00',
               },
@@ -1887,31 +2235,96 @@ const isConfidenceExpanded =
         )}
 
         {typeof mapPlane.track === 'number' &&
-         typeof mapPlane.alt_baro === 'number' && (
-          <Polyline
-            coordinates={[
-              {
-                latitude: mapPlane.lat,
-                longitude: mapPlane.lon,
-              },
-              getDestinationCoordinate(
-                mapPlane.lat,
-                mapPlane.lon,
-                mapPlane.track,
-                getHeadingLineLengthMeters(
-                  myLat,
-                  myLon,
-                  mapPlane.lat,
-                  mapPlane.lon,
-                  mapPlane.track,
-                  mapPlane.alt_baro
-                )
-              ),
-            ]}
-            strokeWidth={4}
-            strokeColor="#111111"
-          />
-        )}
+         typeof mapPlane.alt_baro === 'number' && (() => {
+          const headingLineLength =
+            getHeadingLineLengthMeters(
+              myLat,
+              myLon,
+              mapPlane.lat,
+              mapPlane.lon,
+              mapPlane.track,
+              mapPlane.alt_baro
+            );
+
+          const dashCount = 8;
+          const dashSpacing = 1 / dashCount;
+          const dashLength = 0.055;
+
+          return (
+            <>
+              <Polyline
+                coordinates={[
+                  {
+                    latitude: mapPlane.lat,
+                    longitude: mapPlane.lon,
+                  },
+                  getDestinationCoordinate(
+                    mapPlane.lat,
+                    mapPlane.lon,
+                    mapPlane.track,
+                    headingLineLength
+                  ),
+                ]}
+                strokeWidth={7}
+                strokeColor="#FFD400"
+                geodesic={true}
+                zIndex={6}
+              />
+
+              {Array.from(
+                { length: dashCount },
+                (_, index) => {
+                  const startFraction =
+                    (
+                      index * dashSpacing +
+                      trackDashPhase
+                    ) % 1;
+
+                  const endFraction =
+                    Math.min(
+                      startFraction + dashLength,
+                      1
+                    );
+
+                  if (
+                    endFraction <= startFraction
+                  ) {
+                    return null;
+                  }
+
+                  return (
+                    <Polyline
+                      key={
+                        'moving-track-dash-' +
+                        index
+                      }
+                      coordinates={[
+                        getDestinationCoordinate(
+                          mapPlane.lat,
+                          mapPlane.lon,
+                          mapPlane.track,
+                          headingLineLength *
+                            startFraction
+                        ),
+                        getDestinationCoordinate(
+                          mapPlane.lat,
+                          mapPlane.lon,
+                          mapPlane.track,
+                          headingLineLength *
+                            endFraction
+                        ),
+                      ]}
+                      strokeWidth={3}
+                      strokeColor="#000000"
+                      geodesic={true}
+                      zIndex={7}
+                    />
+                  );
+                }
+              )}
+            </>
+          );
+        })()}
 
         <Marker
           coordinate={{
@@ -1921,46 +2334,15 @@ const isConfidenceExpanded =
           title="My Location"
         />
 
-        {typeof mapPlane.track === 'number' &&
-         typeof mapPlane.alt_baro === 'number' && (() => {
-
-          const arrowHeadLength =
-            getVisibilityRadiusMeters(
-              mapPlane.alt_baro,
-              10
-            ) * 0.08;
-
-          const backLeft =
-            getDestinationCoordinate(
-              mapPlane.lat,
-              mapPlane.lon,
-              mapPlane.track + 150,
-              arrowHeadLength
-            );
-
-          const backRight =
-            getDestinationCoordinate(
-              mapPlane.lat,
-              mapPlane.lon,
-              mapPlane.track - 150,
-              arrowHeadLength
-            );
-
-          return (
-            <Polyline
-              coordinates={[
-                backLeft,
-                {
-                  latitude: mapPlane.lat,
-                  longitude: mapPlane.lon,
-                },
-                backRight,
-              ]}
-              strokeWidth={5}
-              strokeColor="#111111"
-            />
-          );
-        })()}
+        <Marker
+          coordinate={{
+            latitude: mapPlane.lat,
+            longitude: mapPlane.lon,
+          }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          image={require('../../assets/images/aircraft-dot.png')}
+          zIndex={10}
+        />
 
       </MapView>
 
@@ -2071,6 +2453,27 @@ const styles = StyleSheet.create({
 
   buttonText: {
     fontWeight: 'bold',
+  },
+
+  allFlightsMapButton: {
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginTop: -8,
+    marginBottom: 20,
+    alignItems: 'center',
+    backgroundColor: '#FFD400',
+  },
+
+  allFlightsMapButtonText: {
+    fontWeight: 'bold',
+  },
+
+  allFlightsMapSummary: {
+    paddingHorizontal: 18,
+    paddingTop: 6,
+    paddingBottom: 2,
+    fontSize: 14,
   },
 
   card: {

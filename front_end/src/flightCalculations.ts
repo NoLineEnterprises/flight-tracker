@@ -288,6 +288,143 @@ export function formatVisibilityConfidence(
 }
 
 
+
+export type TrackVisibilityGeometry = {
+  closestDistance: number;
+  closestAlongTrackMiles: number;
+  nearIntersectionMiles: number | null;
+  farIntersectionMiles: number | null;
+  maxVisibleDistance: number;
+};
+
+
+export function getTrackVisibilityGeometry(
+  myLat: number,
+  myLon: number,
+  planeLat: number,
+  planeLon: number,
+  track: number,
+  altitudeFeet: number
+): TrackVisibilityGeometry | null {
+
+  if (
+    !Number.isFinite(myLat) ||
+    !Number.isFinite(myLon) ||
+    !Number.isFinite(planeLat) ||
+    !Number.isFinite(planeLon) ||
+    !Number.isFinite(track) ||
+    !Number.isFinite(altitudeFeet)
+  ) {
+    return null;
+  }
+
+  const earthRadiusMiles = 3958.8;
+
+  const startToObserverMiles =
+    getDistanceMiles(
+      planeLat,
+      planeLon,
+      myLat,
+      myLon
+    );
+
+  const startToObserverRadians =
+    startToObserverMiles /
+    earthRadiusMiles;
+
+  const bearingToObserverRadians =
+    getBearing(
+      planeLat,
+      planeLon,
+      myLat,
+      myLon
+    ) * Math.PI / 180;
+
+  const trackRadians =
+    track * Math.PI / 180;
+
+  const bearingDifference =
+    bearingToObserverRadians -
+    trackRadians;
+
+  const crossTrackRadians =
+    Math.asin(
+      Math.sin(startToObserverRadians) *
+      Math.sin(bearingDifference)
+    );
+
+  const closestDistance =
+    Math.abs(crossTrackRadians) *
+    earthRadiusMiles;
+
+  const closestAlongTrackRadians =
+    Math.atan2(
+      Math.sin(startToObserverRadians) *
+      Math.cos(bearingDifference),
+      Math.cos(startToObserverRadians)
+    );
+
+  const closestAlongTrackMiles =
+    closestAlongTrackRadians *
+    earthRadiusMiles;
+
+  const maxVisibleDistance =
+    altitudeFeet /
+    Math.tan(30 * Math.PI / 180) /
+    5280;
+
+  const maxVisibleRadians =
+    maxVisibleDistance /
+    earthRadiusMiles;
+
+  const absoluteCrossTrackRadians =
+    Math.abs(crossTrackRadians);
+
+  if (
+    absoluteCrossTrackRadians >
+    maxVisibleRadians
+  ) {
+    return {
+      closestDistance,
+      closestAlongTrackMiles,
+      nearIntersectionMiles: null,
+      farIntersectionMiles: null,
+      maxVisibleDistance,
+    };
+  }
+
+  const ratio =
+    Math.cos(maxVisibleRadians) /
+    Math.cos(absoluteCrossTrackRadians);
+
+  const clampedRatio =
+    Math.max(-1, Math.min(1, ratio));
+
+  const intersectionOffsetRadians =
+    Math.acos(clampedRatio);
+
+  const intersectionOffsetMiles =
+    intersectionOffsetRadians *
+    earthRadiusMiles;
+
+  const nearIntersectionMiles =
+    closestAlongTrackMiles -
+    intersectionOffsetMiles;
+
+  const farIntersectionMiles =
+    closestAlongTrackMiles +
+    intersectionOffsetMiles;
+
+  return {
+    closestDistance,
+    closestAlongTrackMiles,
+    nearIntersectionMiles,
+    farIntersectionMiles,
+    maxVisibleDistance,
+  };
+}
+
+
 export type FutureVisibility = {
   willBeVisible: boolean;
   minutesToClosest: number | null;
@@ -313,145 +450,85 @@ export function getFutureVisibility(
   if (
     !Number.isFinite(track) ||
     !Number.isFinite(speedKnots) ||
-    !Number.isFinite(altitudeFeet)
+    !Number.isFinite(altitudeFeet) ||
+    speedKnots <= 0
   ) {
     return null;
   }
 
-  const latMiles =
-    (planeLat - myLat) * 69;
+  const geometry =
+    getTrackVisibilityGeometry(
+      myLat,
+      myLon,
+      planeLat,
+      planeLon,
+      track,
+      altitudeFeet
+    );
 
-  const lonMiles =
-    (planeLon - myLon) *
-    69 *
-    Math.cos(myLat * Math.PI / 180);
+  if (geometry === null) {
+    return null;
+  }
 
   const speedMph =
     speedKnots * 1.15078;
 
-  const trackRadians =
-    track * Math.PI / 180;
-
-  const velocityEast =
-    speedMph * Math.sin(trackRadians);
-
-  const velocityNorth =
-    speedMph * Math.cos(trackRadians);
-
-  const velocitySquared =
-    velocityEast ** 2 +
-    velocityNorth ** 2;
-
-  if (velocitySquared === 0) {
-    return null;
-  }
-
-  const timeHours =
-    -(
-      lonMiles * velocityEast +
-      latMiles * velocityNorth
-    ) /
-    velocitySquared;
-
-  const closestEast =
-    lonMiles +
-    velocityEast * timeHours;
-
-  const closestNorth =
-    latMiles +
-    velocityNorth * timeHours;
-
-  const closestDistance =
-    Math.sqrt(
-      closestEast ** 2 +
-      closestNorth ** 2
-    );
-
-  const closestBearing =
-    closestDistance > 0
-      ? (
-          Math.atan2(
-            closestEast,
-            closestNorth
-          ) * 180 / Math.PI + 360
-        ) % 360
+  const minutesToClosest =
+    geometry.closestAlongTrackMiles > 0
+      ? geometry.closestAlongTrackMiles /
+        speedMph * 60
       : null;
-
-  const maxVisibleDistance =
-    altitudeFeet /
-    Math.tan(10 * Math.PI / 180) /
-    5280;
-
-  const a = velocitySquared;
-
-  const b =
-    2 * (
-      lonMiles * velocityEast +
-      latMiles * velocityNorth
-    );
-
-  const c =
-    lonMiles ** 2 +
-    latMiles ** 2 -
-    maxVisibleDistance ** 2;
-
-  const discriminant =
-    b ** 2 - 4 * a * c;
 
   let visibleStartMinutes: number | null = null;
   let visibleEndMinutes: number | null = null;
   let visibleDurationMinutes: number | null = null;
 
-  if (discriminant >= 0) {
+  if (
+    geometry.farIntersectionMiles !== null &&
+    geometry.farIntersectionMiles > 0
+  ) {
+    const startMiles =
+      Math.max(
+        0,
+        geometry.nearIntersectionMiles ?? 0
+      );
 
-    const sqrtDiscriminant =
-      Math.sqrt(discriminant);
+    visibleStartMinutes =
+      startMiles / speedMph * 60;
 
-    const enterHours =
-      (-b - sqrtDiscriminant) /
-      (2 * a);
+    visibleEndMinutes =
+      geometry.farIntersectionMiles /
+      speedMph * 60;
 
-    const exitHours =
-      (-b + sqrtDiscriminant) /
-      (2 * a);
-
-    if (exitHours > 0) {
-
-      const startHours =
-        Math.max(0, enterHours);
-
-      visibleStartMinutes =
-        startHours * 60;
-
-      visibleEndMinutes =
-        exitHours * 60;
-
-      visibleDurationMinutes =
-        (exitHours - startHours) * 60;
-    }
+    visibleDurationMinutes =
+      visibleEndMinutes -
+      visibleStartMinutes;
   }
 
   return {
     willBeVisible:
-      timeHours > 0 &&
-      closestDistance <= maxVisibleDistance,
+      geometry.farIntersectionMiles !== null &&
+      geometry.farIntersectionMiles > 0,
 
-    minutesToClosest:
-      timeHours > 0
-        ? timeHours * 60
-        : null,
+    minutesToClosest,
 
     closestDistance:
-      timeHours > 0
-        ? closestDistance
+      minutesToClosest !== null
+        ? geometry.closestDistance
         : null,
 
     closestBearing:
-      timeHours > 0
-        ? closestBearing
+      minutesToClosest !== null
+        ? getBearing(
+            myLat,
+            myLon,
+            planeLat,
+            planeLon
+          )
         : null,
 
-    maxVisibleDistance,
+    maxVisibleDistance:
+      geometry.maxVisibleDistance,
 
     visibleStartMinutes,
     visibleEndMinutes,
