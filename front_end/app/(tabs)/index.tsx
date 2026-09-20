@@ -36,12 +36,23 @@ const API_BASE_URL =
   //'http://192.168.1.65:3000/api/flights';
   'https://flight-tracker-nnuj.onrender.com/api/flights';
 
+const API_ROUTE_URL =
+  //'http://192.168.1.65:3000/api/route';
+  'https://flight-tracker-nnuj.onrender.com/api/route';
+
 const DEFAULT_SAVED_LAT = '40.58';
 const DEFAULT_SAVED_LON = '-98.38';
 
 type LocationMode =
   | 'phone'
   | 'saved';
+
+type AirportInfo = {
+  name?: string | null;
+  icao?: string | null;
+  iata?: string | null;
+  city?: string | null;
+};
 
 type Aircraft = {
   flight?: string;
@@ -52,6 +63,14 @@ type Aircraft = {
   alt_baro?: number;
   track?: number;
   gs?: number;
+  origin?: AirportInfo | null;
+  destination?: AirportInfo | null;
+};
+
+type RouteResponse = {
+  flight: string;
+  origin: AirportInfo | null;
+  destination: AirportInfo | null;
 };
 
 type ApiResponse = {
@@ -61,6 +80,86 @@ type ApiResponse = {
   };
   aircraft: Aircraft[];
 };
+
+function formatAirport(
+  airport?: AirportInfo | null
+) {
+  if (!airport) {
+    return 'Unknown';
+  }
+
+  const code =
+    airport.iata ||
+    airport.icao ||
+    null;
+
+  const place =
+    airport.city ||
+    airport.name ||
+    null;
+
+  if (code && place) {
+    return code + ' - ' + place;
+  }
+
+  return code || place || 'Unknown';
+}
+
+async function getFlightRoute(
+  flight?: string
+): Promise<{
+  origin: AirportInfo | null;
+  destination: AirportInfo | null;
+}> {
+
+  const callsign =
+    flight?.trim();
+
+  if (!callsign) {
+    return {
+      origin: null,
+      destination: null,
+    };
+  }
+
+  try {
+
+    const response =
+      await fetch(
+        API_ROUTE_URL +
+        '?flight=' +
+        encodeURIComponent(callsign)
+      );
+
+    if (!response.ok) {
+      return {
+        origin: null,
+        destination: null,
+      };
+    }
+
+    const data: RouteResponse =
+      await response.json();
+
+    return {
+      origin: data.origin ?? null,
+      destination:
+        data.destination ?? null,
+    };
+
+  } catch (error) {
+
+    console.log(
+      'Route lookup unavailable for ' +
+      callsign
+    );
+
+    return {
+      origin: null,
+      destination: null,
+    };
+  }
+}
 
 function getMapFlightData(
   plane: Aircraft,
@@ -823,11 +922,31 @@ useEffect(() => {
         );
       });
 
-      setAircraft(filteredAircraft);
+      const aircraftWithRoutes =
+        await Promise.all(
+          filteredAircraft.map(
+            async (plane) => {
+
+              const route =
+                await getFlightRoute(
+                  plane.flight
+                );
+
+              return {
+                ...plane,
+                origin: route.origin,
+                destination:
+                  route.destination,
+              };
+            }
+          )
+        );
+
+      setAircraft(aircraftWithRoutes);
 
       setStatus(
         'Aircraft found: ' +
-        filteredAircraft.length
+        aircraftWithRoutes.length
       );
 
     } catch (error) {
@@ -1462,6 +1581,20 @@ const isConfidenceExpanded =
             Type: {plane.t || 'Unknown'}
           </Text>
 
+          <Text>
+            Origin:{' '}
+            {formatAirport(
+              plane.origin
+            )}
+          </Text>
+
+          <Text>
+            Destination:{' '}
+            {formatAirport(
+              plane.destination
+            )}
+          </Text>
+
         </View>
 
         <Text style={styles.expandSymbol}>
@@ -1902,6 +2035,21 @@ const isConfidenceExpanded =
       </View>
 
       <View style={styles.mapDetails}>
+
+        <View style={styles.mapDetailFullWidth}>
+          <Text style={styles.mapDetailLabel}>
+            Route
+          </Text>
+          <Text style={styles.mapDetailValue}>
+            {formatAirport(
+              mapPlane.origin
+            )}
+            {' → '}
+            {formatAirport(
+              mapPlane.destination
+            )}
+          </Text>
+        </View>
 
         <View style={styles.mapDetailRow}>
           <View style={styles.mapDetailItem}>
