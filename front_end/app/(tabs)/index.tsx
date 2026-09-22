@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 
 import {
+  AppState,
   Modal,
   Pressable,
   ScrollView,
@@ -42,6 +43,8 @@ const API_ROUTE_URL =
 
 const DEFAULT_SAVED_LAT = '40.58';
 const DEFAULT_SAVED_LON = '-98.38';
+
+const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 
 type LocationMode =
   | 'phone'
@@ -624,6 +627,23 @@ export default function HomeScreen() {
   const [status, setStatus] =
     useState('Waiting for flight data...');
 
+const requestInProgressRef =
+  useRef(false);
+
+const appStateRef =
+  useRef(AppState.currentState);
+
+const routeCacheRef =
+  useRef(
+    new Map<
+      string,
+      {
+        origin: AirportInfo | null;
+        destination: AirportInfo | null;
+      }
+    >()
+  );
+
 const [expandedCards, setExpandedCards] =
   useState<string[]>([]);
 
@@ -682,6 +702,12 @@ useEffect(() => {
     observerLat: number,
     observerLon: number
   ) {
+
+    if (requestInProgressRef.current) {
+      return;
+    }
+
+    requestInProgressRef.current = true;
 
     try {
 
@@ -927,10 +953,34 @@ useEffect(() => {
           filteredAircraft.map(
             async (plane) => {
 
-              const route =
-                await getFlightRoute(
-                  plane.flight
-                );
+              const callsign =
+                plane.flight?.trim() ?? '';
+
+              let route = {
+                origin: null as AirportInfo | null,
+                destination: null as AirportInfo | null,
+              };
+
+              if (callsign) {
+                const cachedRoute =
+                  routeCacheRef.current.get(
+                    callsign
+                  );
+
+                if (cachedRoute) {
+                  route = cachedRoute;
+                } else {
+                  route =
+                    await getFlightRoute(
+                      callsign
+                    );
+
+                  routeCacheRef.current.set(
+                    callsign,
+                    route
+                  );
+                }
+              }
 
               return {
                 ...plane,
@@ -943,6 +993,34 @@ useEffect(() => {
         );
 
       setAircraft(aircraftWithRoutes);
+
+      setMapPlane((currentPlane) => {
+        if (currentPlane === null) {
+          return null;
+        }
+
+        const currentHex =
+          currentPlane.hex;
+
+        const currentFlight =
+          currentPlane.flight?.trim();
+
+        const refreshedPlane =
+          aircraftWithRoutes.find(
+            (plane) =>
+              (
+                currentHex &&
+                plane.hex === currentHex
+              ) ||
+              (
+                currentFlight &&
+                plane.flight?.trim() ===
+                  currentFlight
+              )
+          );
+
+        return refreshedPlane ?? null;
+      });
 
       setStatus(
         'Aircraft found: ' +
@@ -958,6 +1036,10 @@ useEffect(() => {
           ? 'ERROR: ' + error.message
           : 'ERROR getting aircraft'
       );
+
+    } finally {
+
+      requestInProgressRef.current = false;
     }
   }
 
@@ -1076,6 +1158,56 @@ useEffect(() => {
 
     await useSavedLocation();
   }
+
+
+  useEffect(() => {
+
+    const subscription =
+      AppState.addEventListener(
+        'change',
+        (nextState) => {
+          appStateRef.current =
+            nextState;
+        }
+      );
+
+    return () => {
+      subscription.remove();
+    };
+
+  }, []);
+
+
+  useEffect(() => {
+
+    if (!locationSettingsLoaded) {
+      return;
+    }
+
+    const timer =
+      setInterval(() => {
+
+        if (
+          appStateRef.current !== 'active' ||
+          requestInProgressRef.current
+        ) {
+          return;
+        }
+
+        refreshAircraft();
+
+      }, AUTO_REFRESH_INTERVAL_MS);
+
+    return () => {
+      clearInterval(timer);
+    };
+
+  }, [
+    locationSettingsLoaded,
+    locationMode,
+    savedLatText,
+    savedLonText,
+  ]);
 
 
   useEffect(() => {

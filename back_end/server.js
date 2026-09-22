@@ -4,18 +4,47 @@ const path = require("path");
 
 const PORT = 3000;
 
-// Default location keeps the old desktop/browser version working
-// when no latitude/longitude are supplied.
 const defaultLat = 40.58;
 const defaultLon = -98.38;
-
 const radius = 500;
 
-// Cache flight routes so we do not repeatedly request the same route.
 const routeCache = new Map();
+const ROUTE_CACHE_MS = 60 * 60 * 1000;
 
-const ROUTE_CACHE_MS =
-    60 * 60 * 1000; // 1 hour
+// Last successful aircraft data, stored separately by approximate location.
+const aircraftCache = new Map();
+const AIRCRAFT_CACHE_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+
+function getAircraftCacheKey(lat, lon) {
+    // Prevent tiny GPS changes from creating a different cache every minute.
+    return `${lat.toFixed(2)},${lon.toFixed(2)}`;
+}
+
+function sendAircraftResponse(
+    res,
+    requestedLat,
+    requestedLon,
+    aircraft,
+    cached,
+    timestamp
+) {
+    res.writeHead(200, {
+        "Content-Type": "application/json"
+    });
+
+    res.end(JSON.stringify({
+        location: {
+            lat: requestedLat,
+            lon: requestedLon
+        },
+        aircraft,
+        cached,
+        dataAgeSeconds: Math.max(
+            0,
+            Math.floor((Date.now() - timestamp) / 1000)
+        )
+    }));
+}
 
 async function getRouteForFlight(flight) {
 
@@ -207,6 +236,12 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
+            const cacheKey =
+                getAircraftCacheKey(
+                    requestedLat,
+                    requestedLon
+                );
+
             const apiUrl =
                 `https://api.adsb.lol/v2/point/${requestedLat}/${requestedLon}/${radius}`;
 
@@ -221,29 +256,82 @@ const server = http.createServer(async (req, res) => {
                 }
             });
 
-            if (!response.ok) {
-                const errorText =
-                    await response.text();
+            if (response.ok) {
 
-                throw new Error(
-                    `ADSB.lol returned ${response.status}: ${errorText}`
+                const data =
+                    await response.json();
+
+                const aircraft =
+                    Array.isArray(data.ac)
+                        ? data.ac
+                        : [];
+
+                const timestamp =
+                    Date.now();
+
+                // Save every successful ADSB.lol response.
+                aircraftCache.set(cacheKey, {
+                    timestamp,
+                    aircraft
+                });
+
+                console.log(
+                    `Fresh aircraft data received for ${cacheKey}`
                 );
+
+                sendAircraftResponse(
+                    res,
+                    requestedLat,
+                    requestedLon,
+                    aircraft,
+                    false,
+                    timestamp
+                );
+
+                return;
             }
 
-            const data =
-                await response.json();
+            const errorText =
+                await response.text();
 
-            res.writeHead(200, {
-                "Content-Type": "application/json"
-            });
+            console.warn(
+                `ADSB.lol returned ${response.status} for ${cacheKey}`
+            );
 
-            res.end(JSON.stringify({
-                location: {
-                    lat: requestedLat,
-                    lon: requestedLon
-                },
-                aircraft: data.ac
-            }));
+            const cached =
+                aircraftCache.get(cacheKey);
+
+            const cacheAgeMs =
+                cached
+                    ? Date.now() - cached.timestamp
+                    : Infinity;
+
+            // If ADSB.lol temporarily fails, use the most recent
+            // successful response if it is no more than 5 minutes old.
+            if (
+                cached &&
+                cacheAgeMs <= AIRCRAFT_CACHE_MAX_AGE_MS
+            ) {
+
+                console.warn(
+                    `Using cached aircraft data for ${cacheKey}; age ${Math.floor(cacheAgeMs / 1000)} seconds`
+                );
+
+                sendAircraftResponse(
+                    res,
+                    requestedLat,
+                    requestedLon,
+                    cached.aircraft,
+                    true,
+                    cached.timestamp
+                );
+
+                return;
+            }
+
+            throw new Error(
+                `ADSB.lol returned ${response.status}: ${errorText}`
+            );
 
         } catch (error) {
 
@@ -262,8 +350,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Serve the old browser version when those files exist.
-    // On Render, the backend may be deployed without index.html/app.js,
-    // so fall back to a simple health response instead of crashing.
     if (
         requestUrl.pathname === "/" ||
         requestUrl.pathname === "/index.html"
