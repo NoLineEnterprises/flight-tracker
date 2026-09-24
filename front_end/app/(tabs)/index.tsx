@@ -650,10 +650,19 @@ const [expandedCards, setExpandedCards] =
 const [mapPlane, setMapPlane] =
   useState<Aircraft | null>(null);
 
+const [displayView, setDisplayView] =
+  useState<'map' | 'list'>('map');
+
+const [settingsVisible, setSettingsVisible] =
+  useState(false);
+
+const allFlightsMapRef =
+  useRef<MapView | null>(null);
+
 const [
   allFlightsMapVisible,
   setAllFlightsMapVisible,
-] = useState(false);
+] = useState(true);
 
 const [trackDashPhase, setTrackDashPhase] =
   useState(0);
@@ -669,7 +678,7 @@ const [
 ] = useState(false);
 
 const [locationMode, setLocationMode] =
-  useState<LocationMode>('saved');
+  useState<LocationMode>('phone');
 
 const [savedLatText, setSavedLatText] =
   useState(DEFAULT_SAVED_LAT);
@@ -683,7 +692,8 @@ const [locationSettingsLoaded, setLocationSettingsLoaded] =
 useEffect(() => {
   if (
     mapPlane === null &&
-    !allFlightsMapVisible
+    !allFlightsMapVisible &&
+    displayView !== 'map'
   ) {
     return;
   }
@@ -695,7 +705,7 @@ useEffect(() => {
   }, 70);
 
   return () => clearInterval(timer);
-}, [mapPlane, allFlightsMapVisible]);
+}, [mapPlane, allFlightsMapVisible, displayView]);
 
 
   async function getFlights(
@@ -1234,41 +1244,12 @@ useEffect(() => {
           stored.flightTrackerSavedLon ??
           DEFAULT_SAVED_LON;
 
-        const mode: LocationMode =
-          stored.flightTrackerLocationMode ===
-          'phone'
-            ? 'phone'
-            : 'saved';
-
         setSavedLatText(savedLat);
         setSavedLonText(savedLon);
-        setLocationMode(mode);
+        setLocationMode('phone');
         setLocationSettingsLoaded(true);
 
-        if (mode === 'phone') {
-
-          setStatus(
-            'Tap Use Phone Location to update your position.'
-          );
-
-        } else {
-
-          const latitude =
-            Number(savedLat);
-
-          const longitude =
-            Number(savedLon);
-
-          if (
-            Number.isFinite(latitude) &&
-            Number.isFinite(longitude)
-          ) {
-            await getFlights(
-              latitude,
-              longitude
-            );
-          }
-        }
+        await usePhoneLocation();
 
       } catch (error) {
 
@@ -1387,14 +1368,62 @@ useEffect(() => {
         })
       : [];
 
+  useEffect(() => {
+    if (
+      displayView !== 'map' ||
+      myLat === null ||
+      myLon === null ||
+      allFlightsMapAircraft.length === 0
+    ) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      allFlightsMapRef.current?.fitToCoordinates(
+        [
+          {
+            latitude: myLat,
+            longitude: myLon,
+          },
+          ...allFlightsMapAircraft.map((plane) => ({
+            latitude: plane.lat,
+            longitude: plane.lon,
+          })),
+        ],
+        {
+          edgePadding: {
+            top: 60,
+            right: 40,
+            bottom: 60,
+            left: 40,
+          },
+          animated: true,
+        }
+      );
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [myLat, myLon, aircraft, displayView]);
+
   return (
+    <>
+    {displayView === 'list' && (
     <ScrollView
       contentContainerStyle={styles.container}
     >
 
-      <Text style={styles.title}>
-        FlightTracker
-      </Text>
+      <View style={styles.listHeader}>
+        <Text style={styles.title}>
+          FlightTracker
+        </Text>
+
+        <Pressable
+          style={styles.gearButton}
+          onPress={() => setSettingsVisible(true)}
+        >
+          <Text style={styles.gearButtonText}>⚙</Text>
+        </Pressable>
+      </View>
 
       <Text style={styles.status}>
         {status}
@@ -1942,7 +1971,8 @@ const isConfidenceExpanded =
       })}
 
 
-{allFlightsMapVisible &&
+{false &&
+ allFlightsMapVisible &&
  myLat !== null &&
  myLon !== null && (
 
@@ -1977,6 +2007,7 @@ const isConfidenceExpanded =
       </Text>
 
       <MapView
+        ref={allFlightsMapRef}
         provider={PROVIDER_GOOGLE}
         style={styles.map}
         initialRegion={getAllFlightsMapRegion(
@@ -2112,11 +2143,7 @@ const isConfidenceExpanded =
                 image={require('../../assets/images/aircraft-dot.png')}
                 zIndex={6}
                 onPress={() => {
-                  setAllFlightsMapVisible(false);
-
-                  setTimeout(() => {
-                    setMapPlane(plane);
-                  }, 300);
+                  setMapPlane(plane);
                 }}
               />
             </Fragment>
@@ -2129,7 +2156,174 @@ const isConfidenceExpanded =
   </Modal>
 )}
 
-{mapPlane !== null &&
+
+
+    </ScrollView>
+    )}
+
+    {displayView === 'map' &&
+     myLat !== null &&
+     myLon !== null && (
+      <View style={styles.mainMapScreen}>
+        <View style={styles.mainMapHeader}>
+          <View>
+            <Text style={styles.mapTitle}>All Flights</Text>
+            <Text style={styles.mainMapSummary}>
+              {allFlightsMapAircraft.length} flights
+            </Text>
+          </View>
+
+          <Pressable
+            style={styles.gearButton}
+            onPress={() => setSettingsVisible(true)}
+          >
+            <Text style={styles.gearButtonText}>⚙</Text>
+          </Pressable>
+        </View>
+
+        <MapView
+          ref={allFlightsMapRef}
+          provider={PROVIDER_GOOGLE}
+          style={styles.mainMap}
+          initialRegion={getAllFlightsMapRegion(
+            myLat,
+            myLon,
+            aircraft
+          )}
+        >
+          <Marker
+            coordinate={{
+              latitude: myLat,
+              longitude: myLon,
+            }}
+            title="My Location"
+          />
+
+          {allFlightsMapAircraft.map((plane, index) => {
+            const planeKey =
+              plane.hex ??
+              plane.flight?.trim() ??
+              'main-map-plane-' + index;
+
+            const hasTrack =
+              typeof plane.track === 'number' &&
+              typeof plane.alt_baro === 'number';
+
+            let headingLineLength = 0;
+
+            if (hasTrack) {
+              headingLineLength =
+                getHeadingLineLengthMeters(
+                  myLat,
+                  myLon,
+                  plane.lat,
+                  plane.lon,
+                  plane.track as number,
+                  plane.alt_baro as number
+                );
+            }
+
+            const dashCount = 8;
+            const dashSpacing = 1 / dashCount;
+            const dashLength = 0.055;
+
+            return (
+              <Fragment key={planeKey}>
+                {hasTrack && (
+                  <>
+                    <Polyline
+                      coordinates={[
+                        {
+                          latitude: plane.lat,
+                          longitude: plane.lon,
+                        },
+                        getDestinationCoordinate(
+                          plane.lat,
+                          plane.lon,
+                          plane.track as number,
+                          headingLineLength
+                        ),
+                      ]}
+                      strokeWidth={5}
+                      strokeColor="#FFD400"
+                      geodesic={true}
+                      zIndex={4}
+                    />
+
+                    {Array.from(
+                      { length: dashCount },
+                      (_, dashIndex) => {
+                        const startFraction =
+                          (
+                            dashIndex * dashSpacing +
+                            trackDashPhase
+                          ) % 1;
+
+                        const endFraction =
+                          Math.min(
+                            startFraction + dashLength,
+                            1
+                          );
+
+                        if (endFraction <= startFraction) {
+                          return null;
+                        }
+
+                        return (
+                          <Polyline
+                            key={
+                              planeKey +
+                              '-main-dash-' +
+                              dashIndex
+                            }
+                            coordinates={[
+                              getDestinationCoordinate(
+                                plane.lat,
+                                plane.lon,
+                                plane.track as number,
+                                headingLineLength *
+                                  startFraction
+                              ),
+                              getDestinationCoordinate(
+                                plane.lat,
+                                plane.lon,
+                                plane.track as number,
+                                headingLineLength *
+                                  endFraction
+                              ),
+                            ]}
+                            strokeWidth={2}
+                            strokeColor="#000000"
+                            geodesic={true}
+                            zIndex={5}
+                          />
+                        );
+                      }
+                    )}
+                  </>
+                )}
+
+                <Marker
+                  coordinate={{
+                    latitude: plane.lat,
+                    longitude: plane.lon,
+                  }}
+                  anchor={{ x: 0.5, y: 0.5 }}
+                  image={require('../../assets/images/aircraft-dot.png')}
+                  zIndex={6}
+                  onPress={() => {
+                    setMapConfidenceExpanded(false);
+                    setMapPlane(plane);
+                  }}
+                />
+              </Fragment>
+            );
+          })}
+        </MapView>
+      </View>
+    )}
+
+    {mapPlane !== null &&
  myLat !== null &&
  myLon !== null &&
  mapFlightData !== null && (
@@ -2632,7 +2826,73 @@ const isConfidenceExpanded =
 
 )}
 
-    </ScrollView>
+    <Modal
+      visible={settingsVisible}
+      animationType="slide"
+      transparent={false}
+      onRequestClose={() => setSettingsVisible(false)}
+    >
+      <View style={styles.settingsScreen}>
+        <View style={styles.settingsHeader}>
+          <Text style={styles.settingsTitle}>Settings</Text>
+          <Pressable
+            style={styles.closeButton}
+            onPress={() => setSettingsVisible(false)}
+          >
+            <Text style={styles.closeButtonText}>Close</Text>
+          </Pressable>
+        </View>
+
+        <Text style={styles.settingsSectionTitle}>
+          Flight Display
+        </Text>
+
+        <Pressable
+          style={[
+            styles.settingsOption,
+            displayView === 'map' &&
+              styles.settingsOptionActive,
+          ]}
+          onPress={() => {
+            setDisplayView('map');
+            setSettingsVisible(false);
+          }}
+        >
+          <Text
+            style={[
+              styles.settingsOptionText,
+              displayView === 'map' &&
+                styles.settingsOptionTextActive,
+            ]}
+          >
+            Map View
+          </Text>
+        </Pressable>
+
+        <Pressable
+          style={[
+            styles.settingsOption,
+            displayView === 'list' &&
+              styles.settingsOptionActive,
+          ]}
+          onPress={() => {
+            setDisplayView('list');
+            setSettingsVisible(false);
+          }}
+        >
+          <Text
+            style={[
+              styles.settingsOptionText,
+              displayView === 'list' &&
+                styles.settingsOptionTextActive,
+            ]}
+          >
+            Flight List View
+          </Text>
+        </Pressable>
+      </View>
+    </Modal>
+    </>
   );
 }
 
@@ -2947,8 +3207,89 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
+  listHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
 
+  mainMapScreen: {
+    flex: 1,
+    paddingTop: 50,
+  },
 
+  mainMapHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingBottom: 6,
+  },
 
+  mainMapSummary: {
+    fontSize: 14,
+    marginTop: 2,
+  },
+
+  mainMap: {
+    flex: 1,
+  },
+
+  gearButton: {
+    borderWidth: 1,
+    borderRadius: 8,
+    width: 46,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  gearButtonText: {
+    fontSize: 24,
+  },
+
+  settingsScreen: {
+    flex: 1,
+    paddingTop: 50,
+    paddingHorizontal: 20,
+  },
+
+  settingsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 30,
+  },
+
+  settingsTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+  },
+
+  settingsSectionTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 12,
+  },
+
+  settingsOption: {
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 15,
+    marginBottom: 12,
+  },
+
+  settingsOptionActive: {
+    backgroundColor: '#111111',
+  },
+
+  settingsOptionText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+
+  settingsOptionTextActive: {
+    color: '#ffffff',
+  },
 
 });
