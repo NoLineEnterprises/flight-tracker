@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 
 import {
+  Alert,
   AppState,
   Modal,
   Pressable,
@@ -109,7 +110,10 @@ function formatAirport(
 }
 
 async function getFlightRoute(
-  flight?: string
+  flight: string | undefined,
+  lat: number,
+  lon: number,
+  track?: number
 ): Promise<{
   origin: AirportInfo | null;
   destination: AirportInfo | null;
@@ -131,7 +135,17 @@ async function getFlightRoute(
       await fetch(
         API_ROUTE_URL +
         '?flight=' +
-        encodeURIComponent(callsign)
+        encodeURIComponent(callsign) +
+        '&lat=' +
+        encodeURIComponent(String(lat)) +
+        '&lon=' +
+        encodeURIComponent(String(lon)) +
+        '&track=' +
+        encodeURIComponent(
+          typeof track === 'number'
+            ? String(track)
+            : ''
+        )
       );
 
     if (!response.ok) {
@@ -640,6 +654,7 @@ const routeCacheRef =
       {
         origin: AirportInfo | null;
         destination: AirportInfo | null;
+        timestamp: number;
       }
     >()
   );
@@ -650,6 +665,9 @@ const [expandedCards, setExpandedCards] =
 const [mapPlane, setMapPlane] =
   useState<Aircraft | null>(null);
 
+const [projectedMapPosition, setProjectedMapPosition] =
+  useState<{ latitude: number; longitude: number } | null>(null);
+
 const [displayView, setDisplayView] =
   useState<'map' | 'list'>('map');
 
@@ -658,6 +676,12 @@ const [settingsVisible, setSettingsVisible] =
 
 const allFlightsMapRef =
   useRef<MapView | null>(null);
+
+const individualFlightMapRef =
+  useRef<MapView | null>(null);
+
+const flightExitAlertRef =
+  useRef(false);
 
 const [
   allFlightsMapVisible,
@@ -706,6 +730,53 @@ useEffect(() => {
 
   return () => clearInterval(timer);
 }, [mapPlane, allFlightsMapVisible, displayView]);
+
+useEffect(() => {
+  if (mapPlane === null) {
+    setProjectedMapPosition(null);
+    return;
+  }
+
+  const realPositionTime = Date.now();
+
+  const updateProjectedPosition = () => {
+    if (
+      typeof mapPlane.track !== 'number' ||
+      typeof mapPlane.gs !== 'number' ||
+      mapPlane.gs <= 0
+    ) {
+      setProjectedMapPosition({
+        latitude: mapPlane.lat,
+        longitude: mapPlane.lon,
+      });
+      return;
+    }
+
+    const elapsedSeconds =
+      Math.max(0, Date.now() - realPositionTime) / 1000;
+
+    const distanceMeters =
+      mapPlane.gs * 1852 * (elapsedSeconds / 3600);
+
+    setProjectedMapPosition(
+      getDestinationCoordinate(
+        mapPlane.lat,
+        mapPlane.lon,
+        mapPlane.track,
+        distanceMeters
+      )
+    );
+  };
+
+  updateProjectedPosition();
+
+  const timer = setInterval(
+    updateProjectedPosition,
+    1 * 1000
+  );
+
+  return () => clearInterval(timer);
+}, [mapPlane]);
 
 
   async function getFlights(
@@ -977,17 +1048,34 @@ useEffect(() => {
                     callsign
                   );
 
-                if (cachedRoute) {
-                  route = cachedRoute;
+                const routeCacheMaxAgeMs =
+                  10 * 60 * 1000;
+
+                if (
+                  cachedRoute &&
+                  Date.now() - cachedRoute.timestamp <
+                    routeCacheMaxAgeMs
+                ) {
+                  route = {
+                    origin: cachedRoute.origin,
+                    destination:
+                      cachedRoute.destination,
+                  };
                 } else {
                   route =
                     await getFlightRoute(
-                      callsign
+                      callsign,
+                      plane.lat,
+                      plane.lon,
+                      plane.track
                     );
 
                   routeCacheRef.current.set(
                     callsign,
-                    route
+                    {
+                      ...route,
+                      timestamp: Date.now(),
+                    }
                   );
                 }
               }
@@ -1006,6 +1094,7 @@ useEffect(() => {
 
       setMapPlane((currentPlane) => {
         if (currentPlane === null) {
+          flightExitAlertRef.current = false;
           return null;
         }
 
@@ -1015,21 +1104,69 @@ useEffect(() => {
         const currentFlight =
           currentPlane.flight?.trim();
 
+        const matchesSelectedFlight =
+          (plane: Aircraft) =>
+            (
+              currentHex &&
+              plane.hex === currentHex
+            ) ||
+            (
+              currentFlight &&
+              plane.flight?.trim() ===
+                currentFlight
+            );
+
         const refreshedPlane =
           aircraftWithRoutes.find(
-            (plane) =>
-              (
-                currentHex &&
-                plane.hex === currentHex
-              ) ||
-              (
-                currentFlight &&
-                plane.flight?.trim() ===
-                  currentFlight
-              )
+            matchesSelectedFlight
           );
 
-        return refreshedPlane ?? null;
+        if (refreshedPlane) {
+          flightExitAlertRef.current = false;
+          return refreshedPlane;
+        }
+
+        // The selected flight is no longer in the eligible-flight list.
+        // Check the unfiltered ADS-B response so we can tell the user why.
+        const stillInAdsbFeed =
+          data.aircraft.some(
+            matchesSelectedFlight
+          );
+
+        if (!flightExitAlertRef.current) {
+          flightExitAlertRef.current = true;
+
+          const flightLabel =
+            currentFlight ||
+            currentHex ||
+            'This flight';
+
+          Alert.alert(
+            stillInAdsbFeed
+              ? 'Flight No Longer Eligible'
+              : 'Flight Data Unavailable',
+            stillInAdsbFeed
+              ? flightLabel +
+                ' is no longer projected to reach the minimum viewing angle.'
+              : 'Current data for ' +
+                flightLabel +
+                ' is no longer available.',
+            [
+              {
+                text: 'OK',
+                onPress: () => {
+                  flightExitAlertRef.current = false;
+                  setMapConfidenceExpanded(false);
+                  setMapPlane(null);
+                },
+              },
+            ],
+            { cancelable: false }
+          );
+        }
+
+        // Keep the detail screen in place behind the alert until OK is tapped.
+        return currentPlane;
       });
 
       setStatus(
@@ -1277,6 +1414,84 @@ useEffect(() => {
           myLon
         )
       : null;
+
+  // When an individual flight opens (or receives a new real position),
+  // fit the map to the observer, the full 30-degree visibility ring,
+  // the aircraft, and the end of its displayed projected path.
+  useEffect(() => {
+    if (
+      mapPlane === null ||
+      myLat === null ||
+      myLon === null
+    ) {
+      return;
+    }
+
+    const coordinates = [
+      { latitude: myLat, longitude: myLon },
+      { latitude: mapPlane.lat, longitude: mapPlane.lon },
+    ];
+
+    if (typeof mapPlane.alt_baro === 'number') {
+      const ringRadiusMeters =
+        getVisibilityRadiusMeters(mapPlane.alt_baro, 30);
+
+      // Include the north, east, south, and west edges of the
+      // 30-degree ring so the whole ring remains visible.
+      [0, 90, 180, 270].forEach((bearing) => {
+        coordinates.push(
+          getDestinationCoordinate(
+            myLat,
+            myLon,
+            bearing,
+            ringRadiusMeters
+          )
+        );
+      });
+
+      if (typeof mapPlane.track === 'number') {
+        const headingLineLength =
+          getHeadingLineLengthMeters(
+            myLat,
+            myLon,
+            mapPlane.lat,
+            mapPlane.lon,
+            mapPlane.track,
+            mapPlane.alt_baro
+          );
+
+        coordinates.push(
+          getDestinationCoordinate(
+            mapPlane.lat,
+            mapPlane.lon,
+            mapPlane.track,
+            headingLineLength
+          )
+        );
+      }
+    }
+
+    const timer = setTimeout(() => {
+      individualFlightMapRef.current?.fitToCoordinates(
+        coordinates,
+        {
+          edgePadding: {
+            top: 50,
+            right: 50,
+            bottom: 50,
+            left: 50,
+          },
+          animated: false,
+        }
+      );
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [
+    mapPlane === null,
+    myLat,
+    myLon,
+  ]);
 
   // Re-check every aircraft before showing it on the All Flights map.
   // Keep an aircraft only if:
@@ -2657,6 +2872,7 @@ const isConfidenceExpanded =
       </View>
 
       <MapView
+        ref={individualFlightMapRef}
         provider={PROVIDER_GOOGLE}
         style={styles.map}
         initialRegion={getFlightMapRegion(
@@ -2714,8 +2930,8 @@ const isConfidenceExpanded =
             getHeadingLineLengthMeters(
               myLat,
               myLon,
-              mapPlane.lat,
-              mapPlane.lon,
+              projectedMapPosition?.latitude ?? mapPlane.lat,
+              projectedMapPosition?.longitude ?? mapPlane.lon,
               mapPlane.track,
               mapPlane.alt_baro
             );
@@ -2729,12 +2945,12 @@ const isConfidenceExpanded =
               <Polyline
                 coordinates={[
                   {
-                    latitude: mapPlane.lat,
-                    longitude: mapPlane.lon,
+                    latitude: projectedMapPosition?.latitude ?? mapPlane.lat,
+                    longitude: projectedMapPosition?.longitude ?? mapPlane.lon,
                   },
                   getDestinationCoordinate(
-                    mapPlane.lat,
-                    mapPlane.lon,
+                    projectedMapPosition?.latitude ?? mapPlane.lat,
+                    projectedMapPosition?.longitude ?? mapPlane.lon,
                     mapPlane.track,
                     headingLineLength
                   ),
@@ -2774,15 +2990,15 @@ const isConfidenceExpanded =
                       }
                       coordinates={[
                         getDestinationCoordinate(
-                          mapPlane.lat,
-                          mapPlane.lon,
+                          projectedMapPosition?.latitude ?? mapPlane.lat,
+                          projectedMapPosition?.longitude ?? mapPlane.lon,
                           mapPlane.track,
                           headingLineLength *
                             startFraction
                         ),
                         getDestinationCoordinate(
-                          mapPlane.lat,
-                          mapPlane.lon,
+                          projectedMapPosition?.latitude ?? mapPlane.lat,
+                          projectedMapPosition?.longitude ?? mapPlane.lon,
                           mapPlane.track,
                           headingLineLength *
                             endFraction
@@ -2810,8 +3026,8 @@ const isConfidenceExpanded =
 
         <Marker
           coordinate={{
-            latitude: mapPlane.lat,
-            longitude: mapPlane.lon,
+            latitude: projectedMapPosition?.latitude ?? mapPlane.lat,
+            longitude: projectedMapPosition?.longitude ?? mapPlane.lon,
           }}
           anchor={{ x: 0.5, y: 0.5 }}
           image={require('../../assets/images/aircraft-dot.png')}
