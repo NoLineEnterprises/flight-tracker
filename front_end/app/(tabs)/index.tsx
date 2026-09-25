@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 
 import {
+  ActivityIndicator,
   Alert,
   AppState,
   Modal,
@@ -641,6 +642,12 @@ export default function HomeScreen() {
   const [status, setStatus] =
     useState('Waiting for flight data...');
 
+  const [startupLoading, setStartupLoading] =
+    useState(true);
+
+  const [startupStage, setStartupStage] =
+    useState('Starting FlightTracker...');
+
 const requestInProgressRef =
   useRef(false);
 
@@ -658,6 +665,27 @@ const routeCacheRef =
       }
     >()
   );
+
+// Stabilize the 30-degree eligibility threshold so flights do not
+// flicker on/off when successive calculations land near 30 degrees.
+const eligibilityInitializedRef = useRef(false);
+const displayedFlightKeysRef = useRef(new Set<string>());
+const qualifyingStreakRef = useRef(new Map<string, number>());
+const failingStreakRef = useRef(new Map<string, number>());
+
+function getAircraftKey(plane: Aircraft) {
+  const hex = plane.hex?.trim();
+  if (hex) {
+    return 'hex:' + hex;
+  }
+
+  const flight = plane.flight?.trim();
+  if (flight) {
+    return 'flight:' + flight;
+  }
+
+  return '';
+}
 
 const [expandedCards, setExpandedCards] =
   useState<string[]>([]);
@@ -781,7 +809,8 @@ useEffect(() => {
 
   async function getFlights(
     observerLat: number,
-    observerLon: number
+    observerLon: number,
+    isStartup = false
   ) {
 
     if (requestInProgressRef.current) {
@@ -793,6 +822,10 @@ useEffect(() => {
     try {
 
       setStatus('Contacting aircraft API...');
+
+      if (isStartup) {
+        setStartupStage('Getting nearby flights...');
+      }
 
       const requestUrl =
         API_BASE_URL +
@@ -816,8 +849,8 @@ useEffect(() => {
       setMyLat(data.location.lat);
       setMyLon(data.location.lon);
 
-      const filteredAircraft =
-        data.aircraft.filter((plane) => {
+      const qualifiesForViewing =
+        (plane: Aircraft) => {
 
           if (
             !Number.isFinite(plane.lat) ||
@@ -893,7 +926,110 @@ useEffect(() => {
             pathIntersects30DegreeRing;
 
           return visibleNow || futureVisible;
+        };
+
+      const rawAircraftByKey =
+        new Map<string, Aircraft>();
+
+      for (const plane of data.aircraft) {
+        const key = getAircraftKey(plane);
+        if (key) {
+          rawAircraftByKey.set(key, plane);
+        }
+      }
+
+      const qualifyingKeys = new Set<string>();
+
+      for (const plane of data.aircraft) {
+        const key = getAircraftKey(plane);
+        if (key && qualifiesForViewing(plane)) {
+          qualifyingKeys.add(key);
+        }
+      }
+
+      let filteredAircraft: Aircraft[] = [];
+
+      if (!eligibilityInitializedRef.current) {
+        // First successful data pull: populate immediately with every
+        // aircraft that currently meets the 30-degree rule.
+        filteredAircraft = data.aircraft.filter((plane) => {
+          const key = getAircraftKey(plane);
+          return key !== '' && qualifyingKeys.has(key);
         });
+
+        displayedFlightKeysRef.current =
+          new Set(qualifyingKeys);
+        qualifyingStreakRef.current.clear();
+        failingStreakRef.current.clear();
+        eligibilityInitializedRef.current = true;
+      } else {
+        const nextDisplayedKeys =
+          new Set(displayedFlightKeysRef.current);
+
+        // Flights already on screen require two consecutive failed
+        // eligibility calculations before they are removed.
+        for (const key of displayedFlightKeysRef.current) {
+          const plane = rawAircraftByKey.get(key);
+
+          // If ADS-B stops reporting the aircraft entirely, preserve the
+          // existing immediate "Flight Data Unavailable" behavior.
+          if (!plane) {
+            nextDisplayedKeys.delete(key);
+            failingStreakRef.current.delete(key);
+            qualifyingStreakRef.current.delete(key);
+            continue;
+          }
+
+          if (qualifyingKeys.has(key)) {
+            failingStreakRef.current.delete(key);
+            qualifyingStreakRef.current.delete(key);
+            continue;
+          }
+
+          const failures =
+            (failingStreakRef.current.get(key) ?? 0) + 1;
+
+          if (failures >= 2) {
+            nextDisplayedKeys.delete(key);
+            failingStreakRef.current.delete(key);
+          } else {
+            failingStreakRef.current.set(key, failures);
+          }
+        }
+
+        // New flights require two consecutive qualifying calculations
+        // before they are added.
+        for (const key of qualifyingKeys) {
+          if (displayedFlightKeysRef.current.has(key)) {
+            continue;
+          }
+
+          const streak =
+            (qualifyingStreakRef.current.get(key) ?? 0) + 1;
+
+          if (streak >= 2) {
+            nextDisplayedKeys.add(key);
+            qualifyingStreakRef.current.delete(key);
+            failingStreakRef.current.delete(key);
+          } else {
+            qualifyingStreakRef.current.set(key, streak);
+          }
+        }
+
+        // A new-flight qualifying streak must be consecutive.
+        for (const key of Array.from(qualifyingStreakRef.current.keys())) {
+          if (!qualifyingKeys.has(key)) {
+            qualifyingStreakRef.current.delete(key);
+          }
+        }
+
+        displayedFlightKeysRef.current = nextDisplayedKeys;
+
+        filteredAircraft = data.aircraft.filter((plane) => {
+          const key = getAircraftKey(plane);
+          return key !== '' && nextDisplayedKeys.has(key);
+        });
+      }
 
       filteredAircraft.sort((a, b) => {
 
@@ -1187,6 +1323,10 @@ useEffect(() => {
     } finally {
 
       requestInProgressRef.current = false;
+
+      if (isStartup) {
+        setStartupLoading(false);
+      }
     }
   }
 
@@ -1235,13 +1375,19 @@ useEffect(() => {
   }
 
 
-  async function usePhoneLocation() {
+  async function usePhoneLocation(
+    isStartup = false
+  ) {
 
     try {
 
       setStatus(
         'Getting phone location...'
       );
+
+      if (isStartup) {
+        setStartupStage('Finding your phone location...');
+      }
 
       const permission =
         await Location
@@ -1253,6 +1399,10 @@ useEffect(() => {
         setStatus(
           'Phone location permission was not granted.'
         );
+
+        if (isStartup) {
+          setStartupLoading(false);
+        }
 
         return;
       }
@@ -1277,9 +1427,14 @@ useEffect(() => {
         'phone'
       );
 
+      if (isStartup) {
+        setStartupStage('Location found. Getting nearby flights...');
+      }
+
       await getFlights(
         latitude,
-        longitude
+        longitude,
+        isStartup
       );
 
     } catch (error) {
@@ -1292,6 +1447,10 @@ useEffect(() => {
             error.message
           : 'ERROR getting phone location'
       );
+
+      if (isStartup) {
+        setStartupLoading(false);
+      }
     }
   }
 
@@ -1386,7 +1545,7 @@ useEffect(() => {
         setLocationMode('phone');
         setLocationSettingsLoaded(true);
 
-        await usePhoneLocation();
+        await usePhoneLocation(true);
 
       } catch (error) {
 
@@ -1397,6 +1556,7 @@ useEffect(() => {
         setStatus(
           'Could not load saved location settings.'
         );
+        setStartupLoading(false);
       }
     }
 
@@ -1619,6 +1779,27 @@ useEffect(() => {
 
     return () => clearTimeout(timer);
   }, [myLat, myLon, aircraft, displayView]);
+
+  if (startupLoading) {
+    return (
+      <View style={styles.startupScreen}>
+        <Text style={styles.startupPlane}>✈</Text>
+        <Text style={styles.startupTitle}>
+          FlightTracker
+        </Text>
+        <ActivityIndicator
+          size="large"
+          style={styles.startupSpinner}
+        />
+        <Text style={styles.startupStatus}>
+          {startupStage}
+        </Text>
+        <Text style={styles.startupHint}>
+          This may take a few moments.
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <>
@@ -3113,6 +3294,40 @@ const isConfidenceExpanded =
 }
 
 const styles = StyleSheet.create({
+
+  startupScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+  },
+
+  startupPlane: {
+    fontSize: 58,
+    marginBottom: 12,
+  },
+
+  startupTitle: {
+    fontSize: 34,
+    fontWeight: 'bold',
+  },
+
+  startupSpinner: {
+    marginTop: 28,
+    marginBottom: 20,
+  },
+
+  startupStatus: {
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+
+  startupHint: {
+    fontSize: 14,
+    marginTop: 10,
+    textAlign: 'center',
+  },
 
   container: {
     padding: 20,

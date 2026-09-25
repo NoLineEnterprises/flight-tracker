@@ -314,7 +314,16 @@ function selectCurrentRouteLeg(
 }
 
 
-async function getRouteDataForFlight(flight) {
+// Look up the route that is plausible for THIS aircraft position.
+//
+// Unlike the old standing-data lookup, routeset receives the
+// aircraft's current position. This helps when the same callsign
+// is reused for different routes.
+async function getRouteDataForFlight(
+    flight,
+    aircraftLat,
+    aircraftLon
+) {
 
     if (typeof flight !== "string") {
         return null;
@@ -327,8 +336,21 @@ async function getRouteDataForFlight(flight) {
         return null;
     }
 
+    if (
+        !Number.isFinite(aircraftLat) ||
+        !Number.isFinite(aircraftLon)
+    ) {
+        return null;
+    }
+
+    // Include a coarse aircraft position in the cache key.
+    // Callsign-only caching could preserve the wrong route when
+    // a flight number is reused.
+    const cacheKey =
+        `${callsign}:${aircraftLat.toFixed(1)},${aircraftLon.toFixed(1)}`;
+
     const cached =
-        routeCache.get(callsign);
+        routeCache.get(cacheKey);
 
     if (
         cached &&
@@ -337,25 +359,33 @@ async function getRouteDataForFlight(flight) {
         return cached.data;
     }
 
-    const prefix =
-        callsign.substring(0, 2);
-
     const routeUrl =
-        `https://vrs-standing-data.adsb.lol/routes/${prefix}/${encodeURIComponent(callsign)}.json`;
+        "https://api.adsb.lol/api/0/routeset";
 
     try {
 
         const response =
             await fetch(routeUrl, {
+                method: "POST",
                 headers: {
                     "User-Agent": "FlightTrack/0.1",
-                    "Accept": "application/json"
-                }
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    planes: [
+                        {
+                            callsign,
+                            lat: aircraftLat,
+                            lng: aircraftLon
+                        }
+                    ]
+                })
             });
 
         if (!response.ok) {
 
-            routeCache.set(callsign, {
+            routeCache.set(cacheKey, {
                 timestamp: Date.now(),
                 data: null
             });
@@ -363,15 +393,21 @@ async function getRouteDataForFlight(flight) {
             return null;
         }
 
-        const data =
+        const result =
             await response.json();
 
+        const data =
+            Array.isArray(result)
+                ? result[0]
+                : null;
+
         if (
+            !data ||
             !Array.isArray(data._airports) ||
             data._airports.length < 2
         ) {
 
-            routeCache.set(callsign, {
+            routeCache.set(cacheKey, {
                 timestamp: Date.now(),
                 data: null
             });
@@ -381,7 +417,7 @@ async function getRouteDataForFlight(flight) {
 
         // Cache the complete route response rather than one selected
         // origin/destination pair.
-        routeCache.set(callsign, {
+        routeCache.set(cacheKey, {
             timestamp: Date.now(),
             data
         });
@@ -408,7 +444,11 @@ async function getRouteForFlight(
     aircraftTrack
 ) {
     const data =
-        await getRouteDataForFlight(flight);
+        await getRouteDataForFlight(
+            flight,
+            aircraftLat,
+            aircraftLon
+        );
 
     if (
         !data ||
