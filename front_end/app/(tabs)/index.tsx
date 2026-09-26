@@ -2646,56 +2646,27 @@ const isConfidenceExpanded =
                       zIndex={4}
                     />
 
-                    {Array.from(
-                      { length: dashCount },
-                      (_, dashIndex) => {
-                        const startFraction =
-                          (
-                            dashIndex * dashSpacing +
-                            trackDashPhase
-                          ) % 1;
-
-                        const endFraction =
-                          Math.min(
-                            startFraction + dashLength,
-                            1
-                          );
-
-                        if (endFraction <= startFraction) {
-                          return null;
-                        }
-
-                        return (
-                          <Polyline
-                            key={
-                              planeKey +
-                              '-main-dash-' +
-                              dashIndex
-                            }
-                            coordinates={[
-                              getDestinationCoordinate(
-                                plane.lat,
-                                plane.lon,
-                                plane.track as number,
-                                headingLineLength *
-                                  startFraction
-                              ),
-                              getDestinationCoordinate(
-                                plane.lat,
-                                plane.lon,
-                                plane.track as number,
-                                headingLineLength *
-                                  endFraction
-                              ),
-                            ]}
-                            strokeWidth={2}
-                            strokeColor="#000000"
-                            geodesic={true}
-                            zIndex={5}
-                          />
-                        );
-                      }
-                    )}
+                    <Polyline
+                      key={planeKey + '-main-dashes'}
+                      coordinates={[
+                        {
+                          latitude: plane.lat,
+                          longitude: plane.lon,
+                        },
+                        getDestinationCoordinate(
+                          plane.lat,
+                          plane.lon,
+                          plane.track as number,
+                          headingLineLength
+                        ),
+                      ]}
+                      strokeWidth={2}
+                      strokeColor="#000000"
+                      lineDashPattern={[12, 14]}
+                      lineDashPhase={trackDashPhase * 208}
+                      geodesic={true}
+                      zIndex={5}
+                    />
                   </>
                 )}
 
