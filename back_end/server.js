@@ -383,18 +383,49 @@ async function getRouteDataForFlight(
                 })
             });
 
+        const responseText =
+            await response.text();
+
         if (!response.ok) {
 
-            routeCache.set(cacheKey, {
-                timestamp: Date.now(),
-                data: null
-            });
+            console.warn(
+                "ADSB.lol routeset returned a non-OK response:",
+                callsign,
+                response.status,
+                response.statusText,
+                responseText.slice(0, 500)
+            );
 
             return null;
         }
 
-        const result =
-            await response.json();
+        if (!responseText.trim()) {
+
+            console.warn(
+                "ADSB.lol routeset returned an empty response:",
+                callsign,
+                response.status
+            );
+
+            return null;
+        }
+
+        let result;
+
+        try {
+            result = JSON.parse(responseText);
+        } catch (error) {
+
+            console.warn(
+                "ADSB.lol routeset returned invalid JSON:",
+                callsign,
+                response.status,
+                responseText.slice(0, 500),
+                error
+            );
+
+            return null;
+        }
 
         const data =
             Array.isArray(result)
@@ -407,10 +438,12 @@ async function getRouteDataForFlight(
             data._airports.length < 2
         ) {
 
-            routeCache.set(cacheKey, {
-                timestamp: Date.now(),
-                data: null
-            });
+            console.warn(
+                "ADSB.lol routeset returned no usable route:",
+                callsign,
+                response.status,
+                responseText.slice(0, 500)
+            );
 
             return null;
         }
