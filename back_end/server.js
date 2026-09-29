@@ -316,7 +316,7 @@ function selectCurrentRouteLeg(
 
 // Look up the route that is plausible for THIS aircraft position.
 //
-// Unlike the old standing-data lookup, routeset receives the
+// Unlike the old standing-data lookup, this endpoint receives the
 // aircraft's current position. This helps when the same callsign
 // is reused for different routes.
 async function getRouteDataForFlight(
@@ -360,27 +360,17 @@ async function getRouteDataForFlight(
     }
 
     const routeUrl =
-        "https://api.adsb.lol/api/0/routeset";
+        `https://api.adsb.lol/api/0/route/${encodeURIComponent(callsign)}/${aircraftLat}/${aircraftLon}`;
 
     try {
 
         const response =
             await fetch(routeUrl, {
-                method: "POST",
+                method: "GET",
                 headers: {
                     "User-Agent": "FlightTrack/0.1",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    planes: [
-                        {
-                            callsign,
-                            lat: aircraftLat,
-                            lng: aircraftLon
-                        }
-                    ]
-                })
+                    "Accept": "application/json"
+                }
             });
 
         const responseText =
@@ -389,7 +379,7 @@ async function getRouteDataForFlight(
         if (!response.ok) {
 
             console.warn(
-                "ADSB.lol routeset returned a non-OK response:",
+                "ADSB.lol route lookup returned a non-OK response:",
                 callsign,
                 response.status,
                 response.statusText,
@@ -402,7 +392,7 @@ async function getRouteDataForFlight(
         if (!responseText.trim()) {
 
             console.warn(
-                "ADSB.lol routeset returned an empty response:",
+                "ADSB.lol route lookup returned an empty response:",
                 callsign,
                 response.status
             );
@@ -417,7 +407,7 @@ async function getRouteDataForFlight(
         } catch (error) {
 
             console.warn(
-                "ADSB.lol routeset returned invalid JSON:",
+                "ADSB.lol route lookup returned invalid JSON:",
                 callsign,
                 response.status,
                 responseText.slice(0, 500),
@@ -428,9 +418,7 @@ async function getRouteDataForFlight(
         }
 
         const data =
-            Array.isArray(result)
-                ? result[0]
-                : null;
+            result;
 
         if (
             !data ||
@@ -439,7 +427,7 @@ async function getRouteDataForFlight(
         ) {
 
             console.warn(
-                "ADSB.lol routeset returned no usable route:",
+                "ADSB.lol route lookup returned no usable route:",
                 callsign,
                 response.status,
                 responseText.slice(0, 500)
